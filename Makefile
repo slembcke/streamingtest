@@ -3,8 +3,8 @@ default:
 test: streamtest
 	./streamtest
 
-streamtest: streamtest.o
-	cc -o $@ $^
+streamtest: streamtest.o tinycthread.o
+	cc -o $@ -pthread $^
 
 clean:
 	-rm data01 data03 data06 data09 data12 data 15 data.h streamtest
