@@ -35,9 +35,10 @@ typedef struct {
 	unsigned thread_id;
 } worker_context;
 
-#define MAX_WORKERS 256
+static tina_scheduler* SCHED;
 static unsigned WORKER_COUNT;
-worker_context WORKERS[MAX_WORKERS];
+static void* DATA;
+static unsigned BLOCK_COUNT;
 
 static int WorkerBody(void* data){
 	worker_context* ctx = data;
@@ -45,73 +46,91 @@ static int WorkerBody(void* data){
 	return 0;
 }
 
-void StartThreads(tina_scheduler* sched){
-	WORKER_COUNT = sysconf(_SC_NPROCESSORS_ONLN);
-	printf("Starting %d worker threads.\n", WORKER_COUNT);
-	
-	for(unsigned i = 0; i < WORKER_COUNT; i++){
-		worker_context* worker = WORKERS + i;
-		(*worker) = (worker_context){.sched = sched, .queue_idx = 0, .thread_id = i};
-		thrd_create(&worker->thread, WorkerBody, worker);
-	}
-}
-
-static void* Mapfile(const char* name, int *blocks){
-	int fd = open(name, 0);
-	struct stat stats;
-	fstat(fd, &stats);
-	
-	*blocks = stats.st_size/DATA_LENGTH;
-	assert(stats.st_size % DATA_LENGTH == 0);
-	
-	void* ptr = mmap(NULL, stats.st_size, PROT_READ, MAP_SHARED, fd, 0);
-	assert(ptr);
-	return ptr;
-}
-
-typedef struct {
-	void* data;
-	int blocks;
-	
-	int block;
-} BlockContext;
-
 static void BlockJob(tina_job* job, void* user_data, unsigned* thread_id){
-	BlockContext* ctx = user_data;
-	
-	unsigned idx = (61*ctx->block) & (ctx->blocks - 1);
-	if(memcmp(ctx->data, ctx->data + idx*DATA_LENGTH, DATA_LENGTH) != 0){
+	if(memcmp(DATA, user_data, DATA_LENGTH) != 0){
 		fprintf(stderr, "Contents did not match!\n");
 		abort();
 	}
 }
 
-int main(void){
-	int blocks = 0;
-	void* data = Mapfile("data15", &blocks);
-	
-	tina_scheduler* sched = tina_scheduler_new(2*blocks, 1, 32, 64*1024);
-	StartThreads(sched);
+static void RunJobs(tina_job* job, void* user_data, unsigned* thread_id){
+	tina_job_description* descs = user_data;
 	
 	tina_group group;
 	tina_group_init(&group);
 	
-	BlockContext contexts[blocks];
-	tina_job_description descs[blocks];
-	for(unsigned i = 0; i < blocks; i++){
-		contexts[i] = (BlockContext){.data = data, .blocks = blocks, .block = i};
-		descs[i] = (tina_job_description){.func = BlockJob, .user_data = contexts + i};
+	unsigned cursor = 0;
+	while(cursor < BLOCK_COUNT){
+		for(unsigned i = 0; i < WORKER_COUNT*2; i++){
+			void* ptr = descs[cursor + i].user_data;
+			// madvise(ptr, DATA_LENGTH, MADV_SEQUENTIAL);
+		}
+		
+		cursor += tina_scheduler_enqueue_throttled(SCHED, descs + cursor, BLOCK_COUNT - cursor, &group, WORKER_COUNT*2);
+		tina_job_wait(job, &group, WORKER_COUNT);
 	}
-	tina_scheduler_enqueue_batch(sched, descs, blocks, &group);
-	// tina_scheduler_enqueue(sched, NULL, BlockJob, NULL, 0, &group);
-	
+	tina_job_wait(job, &group, 0);
+}
+
+static uint64_t RunSequentialSingle(){
 	u_int64_t t0 = GetNanos();
-	tina_scheduler_wait_blocking(sched, &group, 0);
-	uint64_t nanos = GetNanos() - t0;
+	// madvise(DATA, BLOCK_COUNT*DATA_LENGTH, MADV_SEQUENTIAL);
+	for(unsigned i = 0; i < BLOCK_COUNT; i++){
+		if(memcmp(DATA, DATA + i*DATA_LENGTH, DATA_LENGTH) != 0){
+			fprintf(stderr, "Contents did not match!\n");
+			abort();
+		}
+	}
+	return GetNanos() - t0;
+}
+
+static uint64_t RunRandomParallel(){
+	// Start job system.
+	SCHED = tina_scheduler_new(1024, 1, 32, 64*1024);
 	
-	uint64_t bytes = blocks*DATA_LENGTH;
-	printf("read %"PRIu64" MB (%d blocks) in %"PRIu64" ms\n", bytes >> 20, blocks, nanos/1000000);
-	printf("%.2f GB/s\n", 1e9*bytes/nanos/1024/1024/1024);
+	WORKER_COUNT = sysconf(_SC_NPROCESSORS_ONLN);
+	worker_context WORKERS[WORKER_COUNT];
+	
+	printf("Starting %d worker threads.\n", WORKER_COUNT);
+	for(unsigned i = 0; i < WORKER_COUNT; i++){
+		worker_context* worker = WORKERS + i;
+		(*worker) = (worker_context){.sched = SCHED, .queue_idx = 0, .thread_id = i};
+		thrd_create(&worker->thread, WorkerBody, worker);
+	}
+	
+	// Setup jobs.
+	tina_job_description descs[BLOCK_COUNT];
+	for(unsigned i = 0; i < BLOCK_COUNT; i++){
+		unsigned idx = (61*i) & (BLOCK_COUNT - 1);
+		descs[i] = (tina_job_description){.func = BlockJob, .user_data = DATA + idx*DATA_LENGTH};
+	}
+	
+	tina_group group;
+	tina_group_init(&group);
+	tina_scheduler_enqueue(SCHED, NULL, RunJobs, descs, 0, &group);
+	
+	// Wait for jobs to finish.
+	u_int64_t t0 = GetNanos();
+	tina_scheduler_wait_blocking(SCHED, &group, 0);
+	return GetNanos() - t0;
+}
+
+int main(void){
+	// Map data.
+	int fd = open("data15", 0);
+	struct stat stats;
+	fstat(fd, &stats);
+	
+	BLOCK_COUNT = stats.st_size/DATA_LENGTH;
+	assert(stats.st_size % DATA_LENGTH == 0);
+	
+	DATA = mmap(NULL, stats.st_size, PROT_READ, MAP_SHARED, fd, 0);
+	assert(DATA);
+	
+	uint64_t nanos = RunSequentialSingle();
+	// uint64_t nanos = RunRandomParallel();
+	printf("read %"PRIu64" MB (%d blocks) in %"PRIu64" ms\n", stats.st_size >> 20, BLOCK_COUNT, nanos/1000000);
+	printf("%.2f GB/s\n", 1e9*stats.st_size/nanos/1024/1024/1024);
 	
 	return EXIT_SUCCESS;
 }
