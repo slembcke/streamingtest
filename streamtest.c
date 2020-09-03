@@ -69,35 +69,49 @@ static void* Mapfile(const char* name, int *blocks){
 	return ptr;
 }
 
+typedef struct {
+	void* data;
+	int blocks;
+	
+	int block;
+} BlockContext;
+
 static void BlockJob(tina_job* job, void* user_data, unsigned* thread_id){
-	printf("job\n");
+	BlockContext* ctx = user_data;
+	
+	unsigned idx = (61*ctx->block) & (ctx->blocks - 1);
+	if(memcmp(ctx->data, ctx->data + idx*DATA_LENGTH, DATA_LENGTH) != 0){
+		fprintf(stderr, "Contents did not match!\n");
+		abort();
+	}
 }
 
 int main(void){
-	tina_scheduler* sched = tina_scheduler_new(1024, 1, 32, 64*1024);
-	StartThreads(sched);
-	
 	int blocks = 0;
-	char* data = Mapfile("data15", &blocks);
+	void* data = Mapfile("data15", &blocks);
+	
+	tina_scheduler* sched = tina_scheduler_new(2*blocks, 1, 32, 64*1024);
+	StartThreads(sched);
 	
 	tina_group group;
 	tina_group_init(&group);
 	
-	tina_scheduler_enqueue(sched, NULL, BlockJob, NULL, 0, &group);
+	BlockContext contexts[blocks];
+	tina_job_description descs[blocks];
+	for(unsigned i = 0; i < blocks; i++){
+		contexts[i] = (BlockContext){.data = data, .blocks = blocks, .block = i};
+		descs[i] = (tina_job_description){.func = BlockJob, .user_data = contexts + i};
+	}
+	tina_scheduler_enqueue_batch(sched, descs, blocks, &group);
+	// tina_scheduler_enqueue(sched, NULL, BlockJob, NULL, 0, &group);
 	
 	u_int64_t t0 = GetNanos();
-	for(unsigned i = 0; i < blocks; i++){
-		unsigned idx = (61*i) & (blocks - 1);
-		if(memcmp(data, data + idx*DATA_LENGTH, DATA_LENGTH) != 0){
-			fprintf(stderr, "Contents did not match!\n");
-			abort();
-		}
-	}
+	tina_scheduler_wait_blocking(sched, &group, 0);
 	uint64_t nanos = GetNanos() - t0;
 	
 	uint64_t bytes = blocks*DATA_LENGTH;
 	printf("read %"PRIu64" MB (%d blocks) in %"PRIu64" ms\n", bytes >> 20, blocks, nanos/1000000);
-	printf("%.2f MB/s\n", 1e9*bytes/nanos/1024/1024);
+	printf("%.2f GB/s\n", 1e9*bytes/nanos/1024/1024/1024);
 	
 	return EXIT_SUCCESS;
 }
