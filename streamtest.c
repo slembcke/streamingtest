@@ -38,7 +38,8 @@ int main(void){
 	
 	u_int64_t t0 = GetNanos();
 	for(unsigned i = 0; i < blocks; i++){
-		if(memcmp(data, data + 1*DATA_LENGTH, DATA_LENGTH) != 0){
+		unsigned idx = (61*i) & (blocks - 1);
+		if(memcmp(data, data + idx*DATA_LENGTH, DATA_LENGTH) != 0){
 			fprintf(stderr, "Contents did not match!\n");
 			abort();
 		}
