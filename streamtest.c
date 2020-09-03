@@ -12,6 +12,8 @@
 #include <time.h>
 
 #include "tinycthread.h"
+#include "lz4.h"
+#include "lz4frame.h"
 
 #define TINA_IMPLEMENTATION
 // #define _TINA_ASSERT(_COND_, _MESSAGE_) //{ if(!(_COND_)){fprintf(stdout, _MESSAGE_"\n"); abort();} }
@@ -47,10 +49,24 @@ static int WorkerBody(void* data){
 }
 
 static void BlockJob(tina_job* job, void* user_data, unsigned* thread_id){
-	if(memcmp(DATA, user_data, DATA_LENGTH) != 0){
-		fprintf(stderr, "Contents did not match!\n");
-		abort();
-	}
+	void* buffer = malloc(BLOCK_SIZE);
+	
+	LZ4F_dctx* dctx;
+	LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
+	size_t dst_size = BLOCK_SIZE;
+	size_t src_size = DATA_LENGTH;
+	size_t result = LZ4F_decompress(dctx, buffer, &dst_size, user_data, &src_size, NULL);
+	assert(result == 0);
+	assert(dst_size == BLOCK_SIZE);
+	assert(src_size == DATA_LENGTH);
+	
+	// if(memcmp(DATA, user_data, DATA_LENGTH) != 0){
+	// 	fprintf(stderr, "Contents did not match!\n");
+	// 	abort();
+	// }
+	
+	LZ4F_freeDecompressionContext(dctx);
+	free(buffer);
 }
 
 static void RunJobs(tina_job* job, void* user_data, unsigned* thread_id){
@@ -61,10 +77,10 @@ static void RunJobs(tina_job* job, void* user_data, unsigned* thread_id){
 	
 	unsigned cursor = 0;
 	while(cursor < BLOCK_COUNT){
-		for(unsigned i = 0; i < WORKER_COUNT*2; i++){
-			void* ptr = descs[cursor + i].user_data;
-			// madvise(ptr, DATA_LENGTH, MADV_SEQUENTIAL);
-		}
+		// for(unsigned i = 0; i < WORKER_COUNT*2; i++){
+		// 	void* ptr = descs[cursor + i].user_data;
+		// 	madvise(ptr, DATA_LENGTH, MADV_SEQUENTIAL);
+		// }
 		
 		cursor += tina_scheduler_enqueue_throttled(SCHED, descs + cursor, BLOCK_COUNT - cursor, &group, WORKER_COUNT*2);
 		tina_job_wait(job, &group, WORKER_COUNT);
@@ -127,10 +143,11 @@ int main(void){
 	DATA = mmap(NULL, stats.st_size, PROT_READ, MAP_SHARED, fd, 0);
 	assert(DATA);
 	
-	uint64_t nanos = RunSequentialSingle();
-	// uint64_t nanos = RunRandomParallel();
+	// uint64_t nanos = RunSequentialSingle();
+	uint64_t nanos = RunRandomParallel();
 	printf("read %"PRIu64" MB (%d blocks) in %"PRIu64" ms\n", stats.st_size >> 20, BLOCK_COUNT, nanos/1000000);
-	printf("%.2f GB/s\n", 1e9*stats.st_size/nanos/1024/1024/1024);
+	printf("%.2f GB/s raw\n", 1e9*stats.st_size/nanos/1024/1024/1024);
+	printf("%.2f GB/s lz4\n", 1e9*((size_t)BLOCK_SIZE*(size_t)BLOCK_COUNT)/nanos/1024/1024/1024);
 	
 	return EXIT_SUCCESS;
 }
