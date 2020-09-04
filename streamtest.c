@@ -49,6 +49,11 @@ static int WorkerBody(void* data){
 }
 
 static void BlockJob(tina_job* job, void* user_data, unsigned* thread_id){
+	// if(memcmp(DATA, user_data, DATA_LENGTH) != 0){
+	// 	fprintf(stderr, "Contents did not match!\n");
+	// 	abort();
+	// }
+	
 	void* buffer = malloc(BLOCK_SIZE);
 	
 	LZ4F_dctx* dctx;
@@ -59,11 +64,6 @@ static void BlockJob(tina_job* job, void* user_data, unsigned* thread_id){
 	assert(result == 0);
 	assert(dst_size == BLOCK_SIZE);
 	assert(src_size == DATA_LENGTH);
-	
-	// if(memcmp(DATA, user_data, DATA_LENGTH) != 0){
-	// 	fprintf(stderr, "Contents did not match!\n");
-	// 	abort();
-	// }
 	
 	LZ4F_freeDecompressionContext(dctx);
 	free(buffer);

@@ -1,7 +1,8 @@
 # CFLAGS = -g -O0
 CFLAGS = -O3
 BLOCK_SIZE = 65536
-# BLOCK_SIZE = 262144
+# BLOCK_SIZE = 524288
+# BLOCK_SIZE = 1048576
 
 default:
 
@@ -21,7 +22,7 @@ clean-data:
 	-rm data01 data03 data06 data09 data12 data15 data.h
 
 data01:
-	# head -c 1024 /usr/share/dict/words > $@
+	# head -c $(BLOCK_SIZE) /usr/share/dict/words > $@
 	head -c $(BLOCK_SIZE) /usr/share/dict/words | lz4 -c --best --favor-decSpeed > $@
 
 data03: data01
