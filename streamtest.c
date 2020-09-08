@@ -52,7 +52,7 @@ static void BlockJob(tina_job* job, void* user_data, unsigned* thread_id){
 	// if(memcmp(DATA, user_data, DATA_LENGTH) != 0){
 	// 	fprintf(stderr, "Contents did not match!\n");
 	// 	abort();
-	// }
+	// } return;
 	
 	void* buffer = malloc(BLOCK_SIZE);
 	
@@ -142,6 +142,7 @@ int main(void){
 	
 	DATA = mmap(NULL, stats.st_size, PROT_READ, MAP_SHARED, fd, 0);
 	assert(DATA);
+	madvise(DATA, stats.st_size, MADV_SEQUENTIAL);
 	
 	// uint64_t nanos = RunSequentialSingle();
 	uint64_t nanos = RunRandomParallel();
